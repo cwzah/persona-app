@@ -167,15 +167,56 @@ export default function App() {
     log('Speech recognition ready');
   }, []);
 
-  // Text-to-speech
-  const speak = (text) => {
+  // Text-to-speech using ElevenLabs (cloned voice) or browser fallback
+  const speak = async (text, useClonedVoice = false) => {
+    if (!text) return;
+
+    setIsSpeaking(true);
+    log('Speaking...');
+
+    // Only use ElevenLabs for persona chat (not onboarding interview)
+    if (useClonedVoice && persona) {
+      try {
+        const voiceId = persona?.voiceId || '7Smk3rR9TIKS7r65qrfr';
+        
+        const response = await fetch('/api/speak', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voiceId })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const audio = new Audio(`data:audio/mpeg;base64,${data.audio}`);
+          
+          audio.onended = () => {
+            setIsSpeaking(false);
+            log('Done speaking (ElevenLabs)');
+          };
+          
+          audio.onerror = () => {
+            setIsSpeaking(false);
+            log('Audio playback error');
+          };
+
+          await audio.play();
+          return;
+        } else {
+          log('ElevenLabs failed, falling back to browser voice');
+        }
+      } catch (e) {
+        log(`ElevenLabs error: ${e.message}, using browser voice`);
+      }
+    }
+
+    // Fallback to browser speech synthesis
     return new Promise((resolve) => {
-      if (!synthRef.current || !text) {
+      if (!synthRef.current) {
+        setIsSpeaking(false);
         resolve();
         return;
       }
 
-      // Cancel any ongoing speech
       synthRef.current.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
@@ -188,18 +229,17 @@ export default function App() {
       }
 
       utterance.onstart = () => {
-        setIsSpeaking(true);
-        log('Speaking...');
+        log('Speaking (browser)...');
       };
       
       utterance.onend = () => {
         setIsSpeaking(false);
-        log('Done speaking');
+        log('Done speaking (browser)');
         resolve();
       };
       
       utterance.onerror = (e) => {
-        log(`Speech error: ${e.error}`);
+        log(`Browser speech error: ${e.error}`);
         setIsSpeaking(false);
         resolve();
       };
@@ -318,7 +358,8 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       setMessages([...newMessages, { role: 'assistant', content: cleanText }]);
       setIsLoading(false);
 
-      await speak(cleanText);
+      // Use cloned voice only when chatting with persona, not during onboarding
+      await speak(cleanText, !isOnboarding);
 
       if (isReady && isOnboarding) {
         log('Interview complete - generating persona...');
@@ -369,6 +410,8 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       if (!jsonMatch) throw new Error('No JSON found');
       
       const generatedPersona = JSON.parse(jsonMatch[0]);
+      // Add voice ID to persona
+      generatedPersona.voiceId = '7Smk3rR9TIKS7r65qrfr';
       log(`Persona created for: ${generatedPersona.name}`);
 
       setPersona(generatedPersona);
@@ -384,7 +427,7 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       setScreen('complete');
       setIsLoading(false);
 
-      await speak(`Perfect! I've created your AI persona, ${generatedPersona.name}. You can now share the link so others can talk to your digital twin.`);
+      await speak(`Perfect! I've created your AI persona, ${generatedPersona.name}. You can now share the link so others can talk to your digital twin.`, false);
 
     } catch (error) {
       log(`Persona generation error: ${error.message}`);
@@ -418,14 +461,14 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       setIsLoading(false);
       log(`Greeting: "${greeting}"`);
       
-      await speak(greeting);
+      await speak(greeting, false); // Use browser voice during onboarding
 
     } catch (error) {
       log(`Start error: ${error.message}`);
       const fallback = "Hey! Great to meet you. What's your name?";
       setMessages([{ role: 'assistant', content: fallback }]);
       setIsLoading(false);
-      await speak(fallback);
+      await speak(fallback, false); // Use browser voice during onboarding
     }
   };
 
