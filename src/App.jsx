@@ -39,16 +39,33 @@ export default function App() {
     setDebugLog(prev => [...prev.slice(-15), `${new Date().toLocaleTimeString()}: ${msg}`]);
   };
 
-  // Check for persona in URL on load
+  // Check for persona in URL or localStorage on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const encoded = params.get('p');
+    
     if (encoded) {
+      // Someone else's persona from URL - go to chat
       const decoded = decodePersona(encoded);
       if (decoded) {
         setPersona(decoded);
         setScreen('chat');
         log('Loaded persona from URL');
+      }
+    } else {
+      // Check localStorage for your own persona
+      const savedPersona = localStorage.getItem('myPersona');
+      const savedUrl = localStorage.getItem('myPersonaUrl');
+      if (savedPersona) {
+        try {
+          const parsed = JSON.parse(savedPersona);
+          setPersona(parsed);
+          setShareUrl(savedUrl || '');
+          setScreen('complete');
+          log('Loaded your persona from localStorage');
+        } catch (e) {
+          log('Failed to load saved persona');
+        }
       }
     }
   }, []);
@@ -358,6 +375,11 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       
       const url = `${window.location.origin}?p=${encodePersona(generatedPersona)}`;
       setShareUrl(url);
+      
+      // Save to localStorage
+      localStorage.setItem('myPersona', JSON.stringify(generatedPersona));
+      localStorage.setItem('myPersonaUrl', url);
+      log('Persona saved to localStorage');
       
       setScreen('complete');
       setIsLoading(false);
@@ -814,6 +836,29 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
               Copy Share Link
             </button>
           </div>
+          
+          <button
+            onClick={() => {
+              localStorage.removeItem('myPersona');
+              localStorage.removeItem('myPersonaUrl');
+              setPersona(null);
+              setShareUrl('');
+              setMessages([]);
+              setScreen('landing');
+            }}
+            style={{
+              marginTop: '20px',
+              padding: '10px 20px',
+              background: 'transparent',
+              border: 'none',
+              color: '#64748b',
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+              textDecoration: 'underline'
+            }}
+          >
+            Create a new persona
+          </button>
 
           <div style={{
             marginTop: '20px',
