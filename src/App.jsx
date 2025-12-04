@@ -22,10 +22,10 @@ export default function App() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [onboardingComplete, setOnboardingComplete] = useState(false);
-  const [selectedVoice, setSelectedVoice] = useState(null);
   const [voices, setVoices] = useState([]);
+  const [selectedVoiceIndex, setSelectedVoiceIndex] = useState(0);
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
   
-  // Use ref for conversation history to avoid state timing issues
   const conversationRef = useRef([]);
   const recognitionRef = useRef(null);
   const synthRef = useRef(typeof window !== 'undefined' ? window.speechSynthesis : null);
@@ -34,21 +34,29 @@ export default function App() {
   useEffect(() => {
     const loadVoices = () => {
       if (synthRef.current) {
-        const availableVoices = synthRef.current.getVoices();
-        setVoices(availableVoices);
+        const allVoices = synthRef.current.getVoices();
+        // Filter to English voices only, prefer Australian/UK/US natural voices
+        const englishVoices = allVoices.filter(v => v.lang.startsWith('en'));
         
-        // Find best voice - prefer Australian, then other English natural voices
-        const ausVoice = availableVoices.find(v => 
-          v.lang === 'en-AU' && (v.name.includes('Karen') || v.name.includes('Gordon') || v.name.includes('Catherine'))
-        );
-        const naturalVoice = availableVoices.find(v => 
-          v.name.includes('Natural') || v.name.includes('Neural') || v.name.includes('Premium')
-        );
-        const englishVoice = availableVoices.find(v => 
-          v.lang.startsWith('en') && !v.name.includes('India') && !v.name.includes('Singapore')
-        );
+        // Sort: Australian first, then UK, then US, then others
+        englishVoices.sort((a, b) => {
+          const order = { 'en-AU': 0, 'en-GB': 1, 'en-US': 2 };
+          const aOrder = order[a.lang] ?? 3;
+          const bOrder = order[b.lang] ?? 3;
+          return aOrder - bOrder;
+        });
         
-        setSelectedVoice(ausVoice || naturalVoice || englishVoice || availableVoices[0]);
+        setVoices(englishVoices.length > 0 ? englishVoices : allVoices);
+        
+        // Try to find a good default
+        const defaultIndex = englishVoices.findIndex(v => 
+          v.name.includes('Samantha') || 
+          v.name.includes('Daniel') ||
+          v.name.includes('Karen') ||
+          v.name.includes('Moira') ||
+          v.name.includes('Tessa')
+        );
+        if (defaultIndex >= 0) setSelectedVoiceIndex(defaultIndex);
       }
     };
 
@@ -58,7 +66,7 @@ export default function App() {
     }
   }, []);
 
-  // Check URL for persona on load
+  // Check URL for persona
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const encoded = params.get('p');
@@ -71,19 +79,20 @@ export default function App() {
     }
   }, []);
 
-  // Initialize speech recognition
+  // Initialize speech recognition with better settings
   useEffect(() => {
     if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
+      recognitionRef.current.continuous = true; // Keep listening
       recognitionRef.current.interimResults = true;
       recognitionRef.current.lang = 'en-AU';
+      recognitionRef.current.maxAlternatives = 1;
 
       recognitionRef.current.onresult = (event) => {
         let final = '';
         let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
+        for (let i = 0; i < event.results.length; i++) {
           if (event.results[i].isFinal) {
             final += event.results[i][0].transcript;
           } else {
@@ -93,8 +102,14 @@ export default function App() {
         setTranscript(final || interim);
       };
 
-      recognitionRef.current.onend = () => setIsListening(false);
-      recognitionRef.current.onerror = () => setIsListening(false);
+      recognitionRef.current.onend = () => {
+        setIsListening(false);
+      };
+      
+      recognitionRef.current.onerror = (e) => {
+        console.log('Speech error:', e.error);
+        setIsListening(false);
+      };
     }
 
     return () => {
@@ -104,20 +119,17 @@ export default function App() {
 
   const speak = (text) => {
     return new Promise((resolve) => {
-      if (!synthRef.current) {
+      if (!synthRef.current || voices.length === 0) {
         resolve();
         return;
       }
 
       synthRef.current.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.95;
+      utterance.rate = 0.9;
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
-      
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
-      }
+      utterance.voice = voices[selectedVoiceIndex];
 
       utterance.onstart = () => setIsSpeaking(true);
       utterance.onend = () => { setIsSpeaking(false); resolve(); };
@@ -125,6 +137,16 @@ export default function App() {
 
       synthRef.current.speak(utterance);
     });
+  };
+
+  const testVoice = () => {
+    if (voices.length > 0) {
+      synthRef.current?.cancel();
+      const utterance = new SpeechSynthesisUtterance("G'day, how's it going?");
+      utterance.voice = voices[selectedVoiceIndex];
+      utterance.rate = 0.9;
+      synthRef.current?.speak(utterance);
+    }
   };
 
   const startListening = async () => {
@@ -154,9 +176,7 @@ export default function App() {
       return;
     }
 
-    // Reset conversation
     conversationRef.current = [{ role: 'user', content: 'Hi, I want to create my AI persona.' }];
-    
     setScreen('onboarding');
     setDisplayMessages([]);
     setIsLoading(true);
@@ -168,30 +188,29 @@ export default function App() {
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 1000,
-          system: `You're having a casual voice chat to learn about someone. Keep it natural and conversational.
+          system: `You're having a casual voice chat to learn about someone. Keep it natural.
 
-CRITICAL: Give SHORT replies only - one sentence, max two. This is spoken aloud.
+CRITICAL: One short sentence only. This is spoken aloud.
 
-Ask ONE thing at a time. Across 6-8 back-and-forths, learn:
+Ask ONE thing at a time. Across 6-8 exchanges, learn:
 - Their name and work
 - Where they're from  
 - What excites them
-- A good story from their life
+- A good story
 - Something they believe strongly
-- How friends would describe them
+- How friends describe them
 
-When done (after 6-8 exchanges), add [READY] at the end.
+After 6-8 exchanges, add [READY] at the end.
 
-Start casually - ask their name.`,
+Start by asking their name.`,
           messages: conversationRef.current
         })
       });
       
       const data = await response.json();
-      const text = data.content?.[0]?.text || "Hey there! What's your name?";
+      const text = data.content?.[0]?.text || "Hey! What's your name?";
       const cleanText = text.replace('[READY]', '').trim();
       
-      // Add to conversation ref
       conversationRef.current.push({ role: 'assistant', content: cleanText });
       setDisplayMessages([{ role: 'assistant', content: cleanText }]);
       setIsLoading(false);
@@ -212,34 +231,32 @@ Start casually - ask their name.`,
     const userMessage = transcript.trim();
     setTranscript('');
     
-    // Add user message to conversation
     conversationRef.current.push({ role: 'user', content: userMessage });
     setDisplayMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
     const systemPrompt = screen === 'onboarding' 
-      ? `You're having a casual voice chat to learn about someone. Keep it natural and conversational.
+      ? `You're having a casual voice chat to learn about someone. Keep it natural.
 
-CRITICAL: Give SHORT replies only - one sentence, max two. This is spoken aloud.
+CRITICAL: One short sentence only. This is spoken aloud.
 
-Ask ONE thing at a time. Across 6-8 back-and-forths, learn:
+Ask ONE thing at a time. Across 6-8 exchanges, learn:
 - Their name and work
 - Where they're from  
 - What excites them
-- A good story from their life
+- A good story
 - Something they believe strongly
-- How friends would describe them
+- How friends describe them
 
-When done (after 6-8 exchanges), add [READY] at the end.`
-      : `You ARE ${persona.name}. Speak as them naturally. Keep responses brief - this is voice.
+After 6-8 exchanges, add [READY] at the end.`
+      : `You ARE ${persona.name}. Speak as them. One or two sentences max.
 
 ${persona.tagline}
 Background: ${persona.background}
 Passions: ${persona.passions?.join(', ')}
 Personality: ${persona.personality}
-Style: ${persona.style}
 
-Never mention being an AI.`;
+Never say you're an AI.`;
 
     try {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -257,7 +274,6 @@ Never mention being an AI.`;
       const text = data.content?.[0]?.text || "Tell me more.";
       const cleanText = text.replace('[READY]', '').trim();
       
-      // Add assistant response to conversation
       conversationRef.current.push({ role: 'assistant', content: cleanText });
       setDisplayMessages(prev => [...prev, { role: 'assistant', content: cleanText }]);
       setIsLoading(false);
@@ -280,7 +296,7 @@ Never mention being an AI.`;
 
   const generatePersona = async () => {
     setIsLoading(true);
-    await speak("Great chat! Building your AI now...");
+    await speak("Great! Building your AI now.");
     
     try {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -292,13 +308,13 @@ Never mention being an AI.`;
           system: `Create a persona from this conversation. Return ONLY JSON:
 {
   "name": "name",
-  "tagline": "one line description",
+  "tagline": "one line",
   "background": "background",
   "passions": ["list"],
   "personality": "personality",
   "stories": ["stories"],
   "perspectives": ["views"],
-  "style": "communication style"
+  "style": "how they talk"
 }`,
           messages: [...conversationRef.current, { role: 'user', content: 'Create my persona.' }]
         })
@@ -328,12 +344,6 @@ Never mention being an AI.`;
     alert('Link copied!');
   };
 
-  const startChat = () => {
-    conversationRef.current = [];
-    setDisplayMessages([]);
-    setScreen('chat');
-  };
-
   const exitToLanding = () => {
     synthRef.current?.cancel();
     window.history.pushState({}, '', window.location.pathname);
@@ -348,88 +358,108 @@ Never mention being an AI.`;
     <div style={{
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #16213e 100%)',
-      fontFamily: "'Crimson Pro', Georgia, serif",
+      fontFamily: "system-ui, -apple-system, sans-serif",
       color: '#e8e6e3'
     }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;500&family=Space+Mono&display=swap');
         * { box-sizing: border-box; }
         
         .btn {
           background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
           border: none;
-          padding: 16px 32px;
+          padding: 14px 28px;
           color: white;
-          font-family: 'Space Mono', monospace;
           font-size: 14px;
+          font-weight: 500;
           cursor: pointer;
-          text-transform: uppercase;
           border-radius: 8px;
         }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:disabled { opacity: 0.5; }
         .btn-outline {
           background: transparent;
           border: 1px solid rgba(255,255,255,0.3);
         }
+        .btn-sm { padding: 8px 16px; font-size: 12px; }
         
         .mic {
-          width: 120px;
-          height: 120px;
+          width: 100px;
+          height: 100px;
           border-radius: 50%;
-          font-size: 48px;
+          font-size: 40px;
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 0;
         }
         .mic.active {
-          background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+          background: #dc2626;
           animation: pulse 1.5s infinite;
         }
         @keyframes pulse {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
-          50% { box-shadow: 0 0 0 30px rgba(220, 38, 38, 0); }
+          0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6); }
+          50% { box-shadow: 0 0 0 25px rgba(220, 38, 38, 0); }
         }
         
-        .wave { display: flex; gap: 6px; align-items: center; height: 50px; }
+        .wave { display: flex; gap: 5px; align-items: center; height: 40px; }
         .wave span {
-          width: 6px;
+          width: 5px;
           background: #7c3aed;
           border-radius: 3px;
           animation: wave 0.5s ease-in-out infinite alternate;
         }
-        .wave span:nth-child(1) { height: 15px; }
-        .wave span:nth-child(2) { height: 30px; animation-delay: 0.1s; }
-        .wave span:nth-child(3) { height: 45px; animation-delay: 0.2s; }
-        .wave span:nth-child(4) { height: 30px; animation-delay: 0.3s; }
-        .wave span:nth-child(5) { height: 15px; animation-delay: 0.4s; }
-        @keyframes wave {
-          to { transform: scaleY(1.5); }
+        .wave span:nth-child(1) { height: 12px; }
+        .wave span:nth-child(2) { height: 24px; animation-delay: 0.1s; }
+        .wave span:nth-child(3) { height: 36px; animation-delay: 0.2s; }
+        .wave span:nth-child(4) { height: 24px; animation-delay: 0.3s; }
+        .wave span:nth-child(5) { height: 12px; animation-delay: 0.4s; }
+        @keyframes wave { to { transform: scaleY(1.4); } }
+        
+        select {
+          background: rgba(255,255,255,0.1);
+          border: 1px solid rgba(255,255,255,0.2);
+          color: white;
+          padding: 8px 12px;
+          border-radius: 6px;
+          font-size: 14px;
+          max-width: 280px;
         }
+        select option { background: #1a1a2e; }
       `}</style>
 
       {/* Landing */}
       {screen === 'landing' && (
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', letterSpacing: '4px', fontFamily: 'Space Mono', color: 'rgba(255,255,255,0.4)', marginBottom: '20px' }}>
-            DIGITAL PERSONA
-          </div>
           
-          <h1 style={{ fontSize: 'clamp(40px, 10vw, 70px)', fontWeight: '300', margin: '0 0 20px', background: 'linear-gradient(135deg, #fff, rgba(255,255,255,0.7))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Your AI.<br/>Your Voice.
+          <h1 style={{ fontSize: 'clamp(36px, 10vw, 60px)', fontWeight: '300', margin: '0 0 16px', color: 'white' }}>
+            Your AI. Your Voice.
           </h1>
           
-          <p style={{ fontSize: '18px', color: 'rgba(255,255,255,0.5)', maxWidth: '380px', marginBottom: '40px' }}>
+          <p style={{ fontSize: '17px', color: 'rgba(255,255,255,0.5)', maxWidth: '350px', marginBottom: '32px' }}>
             A quick voice chat creates an AI that speaks as you.
           </p>
 
-          <button className="btn" onClick={startOnboarding}>
+          <button className="btn" onClick={startOnboarding} style={{ marginBottom: '32px' }}>
             🎤 Start Interview
           </button>
           
+          {/* Voice picker */}
           {voices.length > 0 && (
-            <div style={{ marginTop: '40px', fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>
-              Voice: {selectedVoice?.name || 'Default'}
+            <div style={{ marginTop: '20px' }}>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', marginBottom: '8px' }}>
+                Choose AI voice:
+              </div>
+              <select 
+                value={selectedVoiceIndex} 
+                onChange={(e) => setSelectedVoiceIndex(Number(e.target.value))}
+              >
+                {voices.map((v, i) => (
+                  <option key={i} value={i}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+              <button className="btn btn-outline btn-sm" onClick={testVoice} style={{ marginLeft: '8px' }}>
+                Test
+              </button>
             </div>
           )}
         </div>
@@ -439,15 +469,28 @@ Never mention being an AI.`;
       {screen === 'onboarding' && (
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', textAlign: 'center' }}>
           
-          <div style={{ fontSize: '11px', letterSpacing: '3px', fontFamily: 'Space Mono', color: isSpeaking ? '#7c3aed' : isListening ? '#dc2626' : 'rgba(255,255,255,0.4)', marginBottom: '24px' }}>
-            {isSpeaking ? '🔊 SPEAKING' : isListening ? '🎤 LISTENING' : isLoading ? '⏳ THINKING' : '👆 TAP MIC'}
+          <div style={{ fontSize: '12px', color: isSpeaking ? '#7c3aed' : isListening ? '#dc2626' : 'rgba(255,255,255,0.4)', marginBottom: '20px', fontWeight: '500' }}>
+            {isSpeaking ? '🔊 Speaking...' : isListening ? '🎤 Listening...' : isLoading ? '⏳ Thinking...' : '👆 Tap mic to respond'}
           </div>
 
-          {isSpeaking && <div className="wave" style={{ marginBottom: '24px' }}><span/><span/><span/><span/><span/></div>}
+          {isSpeaking && <div className="wave" style={{ marginBottom: '20px' }}><span/><span/><span/><span/><span/></div>}
 
-          <div style={{ fontSize: '20px', color: 'rgba(255,255,255,0.8)', maxWidth: '450px', marginBottom: '32px', minHeight: '60px', lineHeight: 1.5 }}>
-            {transcript || (displayMessages.length > 0 ? displayMessages[displayMessages.length - 1].content : '')}
+          {/* Show what AI said */}
+          <div style={{ fontSize: '18px', color: 'rgba(255,255,255,0.7)', maxWidth: '400px', marginBottom: '16px', minHeight: '50px' }}>
+            {displayMessages.length > 0 && displayMessages[displayMessages.length - 1].role === 'assistant' 
+              ? displayMessages[displayMessages.length - 1].content 
+              : ''}
           </div>
+
+          {/* Show transcript with label */}
+          {(transcript || isListening) && (
+            <div style={{ background: 'rgba(255,255,255,0.05)', padding: '12px 20px', borderRadius: '8px', marginBottom: '20px', maxWidth: '400px' }}>
+              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)', marginBottom: '4px' }}>HEARD:</div>
+              <div style={{ fontSize: '16px', color: '#7c3aed' }}>
+                {transcript || '(listening...)'}
+              </div>
+            </div>
+          )}
 
           {!onboardingComplete && (
             <>
@@ -456,7 +499,7 @@ Never mention being an AI.`;
               </button>
               
               {transcript && !isListening && (
-                <button className="btn" onClick={sendMessage} disabled={isLoading || isSpeaking} style={{ marginTop: '20px' }}>
+                <button className="btn" onClick={sendMessage} disabled={isLoading || isSpeaking} style={{ marginTop: '16px' }}>
                   Send ➤
                 </button>
               )}
@@ -472,26 +515,22 @@ Never mention being an AI.`;
       {/* Complete */}
       {screen === 'complete' && persona && (
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', textAlign: 'center' }}>
-          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '20px', padding: '40px', maxWidth: '400px', width: '100%' }}>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '16px', padding: '36px', maxWidth: '380px', width: '100%' }}>
             
-            <div style={{ fontSize: '11px', letterSpacing: '3px', fontFamily: 'Space Mono', color: '#7c3aed', marginBottom: '12px' }}>
+            <div style={{ fontSize: '11px', color: '#7c3aed', marginBottom: '12px', fontWeight: '600' }}>
               ✓ CREATED
             </div>
             
-            <h2 style={{ fontSize: '28px', fontWeight: '400', margin: '0 0 8px' }}>{persona.name}</h2>
-            <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.6)', margin: '0 0 28px' }}>{persona.tagline}</p>
+            <h2 style={{ fontSize: '26px', fontWeight: '400', margin: '0 0 8px' }}>{persona.name}</h2>
+            <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.6)', margin: '0 0 24px' }}>{persona.tagline}</p>
 
             <button className="btn" onClick={copyLink} style={{ width: '100%', marginBottom: '10px' }}>
               📋 Copy Share Link
             </button>
             
-            <button className="btn btn-outline" onClick={startChat} style={{ width: '100%', marginBottom: '20px' }}>
+            <button className="btn btn-outline" onClick={() => { conversationRef.current = []; setDisplayMessages([]); setScreen('chat'); }} style={{ width: '100%' }}>
               🎤 Test It
             </button>
-
-            <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>
-              Anyone with the link can voice chat with your AI
-            </p>
           </div>
         </div>
       )}
@@ -500,25 +539,32 @@ Never mention being an AI.`;
       {screen === 'chat' && persona && (
         <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', textAlign: 'center' }}>
           
-          <button className="btn btn-outline" onClick={exitToLanding} style={{ position: 'fixed', top: '20px', right: '20px', padding: '8px 16px', fontSize: '11px' }}>
+          <button className="btn btn-outline btn-sm" onClick={exitToLanding} style={{ position: 'fixed', top: '16px', right: '16px' }}>
             Exit
           </button>
 
-          <h2 style={{ fontSize: '22px', fontWeight: '400', margin: '0 0 4px' }}>{persona.name}</h2>
-          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', marginBottom: '24px' }}>{persona.tagline}</p>
+          <h2 style={{ fontSize: '20px', fontWeight: '400', margin: '0 0 4px' }}>{persona.name}</h2>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', marginBottom: '20px' }}>{persona.tagline}</p>
 
-          {isSpeaking && <div className="wave" style={{ marginBottom: '20px' }}><span/><span/><span/><span/><span/></div>}
+          {isSpeaking && <div className="wave" style={{ marginBottom: '16px' }}><span/><span/><span/><span/><span/></div>}
 
-          <div style={{ fontSize: '18px', color: 'rgba(255,255,255,0.8)', maxWidth: '400px', marginBottom: '28px', minHeight: '50px' }}>
-            {transcript || (displayMessages.length > 0 ? displayMessages[displayMessages.length - 1].content : `Talk to ${persona.name}`)}
+          <div style={{ fontSize: '16px', color: 'rgba(255,255,255,0.7)', maxWidth: '350px', marginBottom: '12px', minHeight: '40px' }}>
+            {displayMessages.length > 0 ? displayMessages[displayMessages.length - 1].content : `Ask ${persona.name} anything`}
           </div>
+
+          {(transcript || isListening) && (
+            <div style={{ background: 'rgba(255,255,255,0.05)', padding: '10px 16px', borderRadius: '8px', marginBottom: '16px' }}>
+              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)', marginBottom: '2px' }}>HEARD:</div>
+              <div style={{ fontSize: '15px', color: '#7c3aed' }}>{transcript || '...'}</div>
+            </div>
+          )}
 
           <button className={`btn mic ${isListening ? 'active' : ''}`} onClick={isListening ? stopListening : startListening} disabled={isSpeaking || isLoading}>
             🎤
           </button>
           
           {transcript && !isListening && (
-            <button className="btn" onClick={sendMessage} disabled={isLoading || isSpeaking} style={{ marginTop: '20px' }}>
+            <button className="btn" onClick={sendMessage} disabled={isLoading || isSpeaking} style={{ marginTop: '16px' }}>
               Send ➤
             </button>
           )}
