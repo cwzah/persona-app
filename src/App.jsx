@@ -275,7 +275,7 @@ Style: ${persona.style || ''}
 
 Keep responses brief and conversational. Never say you're an AI. You are ${persona.name}.`;
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -321,7 +321,7 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
     setIsLoading(true);
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -378,7 +378,7 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
     log('Starting onboarding interview...');
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
