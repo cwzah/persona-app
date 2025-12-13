@@ -29,8 +29,10 @@ export default function App() {
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [speechSupported, setSpeechSupported] = useState(true);
+  const [avatarUrl, setAvatarUrl] = useState(null);
 
   const recognitionRef = useRef(null);
+  const fileInputRef = useRef(null);
   const synthRef = useRef(null);
 
   // Add debug message
@@ -49,6 +51,7 @@ export default function App() {
       const decoded = decodePersona(encoded);
       if (decoded) {
         setPersona(decoded);
+        if (decoded.avatar) setAvatarUrl(decoded.avatar);
         setScreen('chat');
         log('Loaded persona from URL');
       }
@@ -60,6 +63,7 @@ export default function App() {
         try {
           const parsed = JSON.parse(savedPersona);
           setPersona(parsed);
+          if (parsed.avatar) setAvatarUrl(parsed.avatar);
           setShareUrl(savedUrl || '');
           setScreen('complete');
           log('Loaded your persona from localStorage');
@@ -415,19 +419,11 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
       log(`Persona created for: ${generatedPersona.name}`);
 
       setPersona(generatedPersona);
-      
-      const url = `${window.location.origin}?p=${encodePersona(generatedPersona)}`;
-      setShareUrl(url);
-      
-      // Save to localStorage
-      localStorage.setItem('myPersona', JSON.stringify(generatedPersona));
-      localStorage.setItem('myPersonaUrl', url);
-      log('Persona saved to localStorage');
-      
-      setScreen('complete');
       setIsLoading(false);
-
-      await speak(`Perfect! I've created your AI persona, ${generatedPersona.name}. You can now share the link so others can talk to your digital twin.`, false);
+      
+      // Go to photo upload screen
+      setScreen('photo-upload');
+      await speak(`Perfect! Now let's add your photo so people can see who they're talking to.`, false);
 
     } catch (error) {
       log(`Persona generation error: ${error.message}`);
@@ -476,6 +472,77 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
   const copyUrl = () => {
     navigator.clipboard.writeText(shareUrl);
     log('URL copied');
+  };
+
+  // Handle photo upload with compression
+  const handlePhotoUpload = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const img = new Image();
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      img.src = e.target.result;
+      img.onload = () => {
+        // Compress to max 150x150 for URL size
+        const canvas = document.createElement('canvas');
+        const maxSize = 150;
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > height) {
+          if (width > maxSize) {
+            height = Math.round(height * maxSize / width);
+            width = maxSize;
+          }
+        } else {
+          if (height > maxSize) {
+            width = Math.round(width * maxSize / height);
+            height = maxSize;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to compressed JPEG
+        const compressed = canvas.toDataURL('image/jpeg', 0.7);
+        setAvatarUrl(compressed);
+        log(`Photo compressed: ${Math.round(compressed.length / 1024)}KB`);
+      };
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Finalize persona with photo
+  const finalizePersona = () => {
+    const finalPersona = { ...persona, avatar: avatarUrl };
+    setPersona(finalPersona);
+    
+    const url = `${window.location.origin}?p=${encodePersona(finalPersona)}`;
+    setShareUrl(url);
+    
+    // Save to localStorage
+    localStorage.setItem('myPersona', JSON.stringify(finalPersona));
+    localStorage.setItem('myPersonaUrl', url);
+    log('Persona finalized with photo');
+    
+    setScreen('complete');
+  };
+
+  // Skip photo upload
+  const skipPhoto = () => {
+    const url = `${window.location.origin}?p=${encodePersona(persona)}`;
+    setShareUrl(url);
+    
+    localStorage.setItem('myPersona', JSON.stringify(persona));
+    localStorage.setItem('myPersonaUrl', url);
+    log('Persona saved without photo');
+    
+    setScreen('complete');
   };
 
   // Render
@@ -584,6 +651,48 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
           flexDirection: 'column',
           alignItems: 'center'
         }}>
+          {/* Chat header with avatar */}
+          {persona && screen === 'chat' && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              marginBottom: '20px',
+              padding: '12px 20px',
+              background: 'rgba(255,255,255,0.05)',
+              borderRadius: '12px',
+              width: '100%'
+            }}>
+              {persona.avatar ? (
+                <div style={{
+                  width: '50px',
+                  height: '50px',
+                  borderRadius: '50%',
+                  background: `url(${persona.avatar}) center/cover`,
+                  flexShrink: 0
+                }} />
+              ) : (
+                <div style={{
+                  width: '50px',
+                  height: '50px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.5rem',
+                  flexShrink: 0
+                }}>
+                  {persona.name?.[0] || '?'}
+                </div>
+              )}
+              <div>
+                <div style={{ fontWeight: '500' }}>Chat with {persona.name}</div>
+                <div style={{ fontSize: '0.8rem', color: '#64748b' }}>{persona.tagline}</div>
+              </div>
+            </div>
+          )}
+
           {/* Conversation display */}
           <div style={{
             width: '100%',
@@ -602,13 +711,28 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
                   padding: '12px 16px',
                   borderRadius: '12px',
                   background: msg.role === 'user' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
-                  textAlign: msg.role === 'user' ? 'right' : 'left'
+                  textAlign: msg.role === 'user' ? 'right' : 'left',
+                  display: 'flex',
+                  flexDirection: msg.role === 'user' ? 'row-reverse' : 'row',
+                  alignItems: 'flex-start',
+                  gap: '10px'
                 }}
               >
-                <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '4px' }}>
-                  {msg.role === 'user' ? 'You' : (persona?.name || 'AI')}
+                {msg.role === 'assistant' && persona?.avatar && (
+                  <div style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: `url(${persona.avatar}) center/cover`,
+                    flexShrink: 0
+                  }} />
+                )}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '4px' }}>
+                    {msg.role === 'user' ? 'You' : (persona?.name || 'AI')}
+                  </div>
+                  <div>{msg.content}</div>
                 </div>
-                <div>{msg.content}</div>
               </div>
             ))}
             {isLoading && (
@@ -805,15 +929,98 @@ Keep responses brief and conversational. Never say you're an AI. You are ${perso
         </div>
       )}
 
+      {/* Photo Upload Screen */}
+      {screen === 'photo-upload' && persona && (
+        <div style={{ textAlign: 'center', maxWidth: '500px' }}>
+          <h2 style={{ fontSize: '1.8rem', fontWeight: '400', marginBottom: '8px' }}>
+            Add Your Photo
+          </h2>
+          <p style={{ color: '#94a3b8', marginBottom: '30px' }}>
+            This will appear when people chat with your AI twin
+          </p>
+
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/*"
+            onChange={handlePhotoUpload}
+            style={{ display: 'none' }}
+          />
+
+          <div 
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              width: '150px',
+              height: '150px',
+              borderRadius: '50%',
+              margin: '0 auto 30px',
+              background: avatarUrl ? `url(${avatarUrl}) center/cover` : 'rgba(255,255,255,0.1)',
+              border: '3px dashed rgba(255,255,255,0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              transition: 'all 0.3s'
+            }}
+          >
+            {!avatarUrl && (
+              <span style={{ color: '#64748b', fontSize: '2.5rem' }}>📷</span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button
+              onClick={finalizePersona}
+              disabled={!avatarUrl}
+              style={{
+                padding: '14px 28px',
+                background: avatarUrl ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'rgba(255,255,255,0.1)',
+                border: 'none',
+                color: avatarUrl ? 'white' : '#64748b',
+                borderRadius: '12px',
+                cursor: avatarUrl ? 'pointer' : 'not-allowed',
+                fontWeight: '500'
+              }}
+            >
+              Continue
+            </button>
+            <button
+              onClick={skipPhoto}
+              style={{
+                padding: '14px 28px',
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#94a3b8',
+                borderRadius: '12px',
+                cursor: 'pointer'
+              }}
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Complete Screen */}
       {screen === 'complete' && persona && (
         <div style={{ textAlign: 'center', maxWidth: '500px' }}>
-          <div style={{
-            fontSize: '4rem',
-            marginBottom: '16px'
-          }}>
-            ✨
-          </div>
+          {persona.avatar ? (
+            <div style={{
+              width: '120px',
+              height: '120px',
+              borderRadius: '50%',
+              margin: '0 auto 16px',
+              background: `url(${persona.avatar}) center/cover`,
+              border: '3px solid rgba(99, 102, 241, 0.5)'
+            }} />
+          ) : (
+            <div style={{
+              fontSize: '4rem',
+              marginBottom: '16px'
+            }}>
+              ✨
+            </div>
+          )}
           <h2 style={{ fontSize: '1.8rem', fontWeight: '400', marginBottom: '8px' }}>
             Meet {persona.name}'s AI Twin
           </h2>
